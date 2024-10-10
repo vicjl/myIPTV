@@ -1,0 +1,5 @@
+#EXTM3U
+#EXTINF:-1 tvg-logo="https://epg.iill.top/logo/虎牙.png" group-title="•游戏「赛事」",「全球总决赛」英雄联盟 4K
+http://live.iill.top/huya.php?id=18524915
+#EXTINF:-1 tvg-logo="https://epg.iill.top/logo/哔哩哔哩.png" group-title="•游戏「赛事」",「全球总决赛」英雄联盟 4K
+http://live.iill.top/bilibili.php?id=10
