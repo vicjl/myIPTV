@@ -1,0 +1,135 @@
+name: Enhanced M3U Link Checker 
+ 
+on:
+  watch:
+    types: [started]
+#  schedule:
+#    - cron: "0,40 * * * *"
+  workflow_dispatch:
+ 
+jobs:
+  check-links:
+    runs-on: ubuntu-latest 
+    permissions:
+      contents: write  # 授予提交权限 
+ 
+    steps:
+      - name: Checkout code 
+        uses: actions/checkout@v4 
+        with:
+          fetch-depth: 0  # 获取完整提交历史 
+ 
+      - name: Set up Python 
+        uses: actions/setup-python@v4 
+        with:
+          python-version: "3.10"
+ 
+      - name: Install dependencies 
+        run: |
+          pip install requests gitpython 
+          sudo apt-get install -y nmap  # 添加网络诊断工具 
+ 
+      - name: Validate and update links 
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAX_RETRIES: 3 
+          TIMEOUT: 15 
+          PREFIX_RANGE: "20-3f"  # 扩展前缀范围 
+        run: |
+          python << 'EOF'
+          import requests 
+          import re 
+          import os 
+          from git import Repo 
+          from requests.adapters  import HTTPAdapter 
+          from urllib3.util.retry  import Retry 
+ 
+          # 配置智能重试机制 
+          session = requests.Session()
+          retries = Retry(
+              total=int(os.getenv('MAX_RETRIES',  3)),
+              backoff_factor=0.5,
+              status_forcelist=[500, 502, 503, 504]
+          )
+          session.mount('http://',  HTTPAdapter(max_retries=retries))
+          session.mount('https://',  HTTPAdapter(max_retries=retries))
+ 
+          # 动态生成前缀范围 
+          prefix_range = os.getenv('PREFIX_RANGE',  '20-3f').split('-')
+          suffixes = [f"{x:02x}" for x in range(
+              int(prefix_range[0], 16), 
+              int(prefix_range[1], 16) + 1 
+          )]
+ 
+          with open('CCTV.m3u', 'r+', encoding='utf-8') as f:
+              lines = f.readlines() 
+              f.seek(0) 
+ 
+              failed_channels = []
+              base_prefix = "[2409:8087:1:20:20::2c]/"
+ 
+              for i, line in enumerate(lines):
+                  if line.strip().lower().startswith(base_prefix.lower()):   # 兼容大小写 
+                      original_url = line.strip() 
+                      valid = False 
+                      print(f"Validating: {original_url}")
+ 
+                      # 初始检测 
+                      try:
+                          resp = session.get(original_url,  timeout=int(os.getenv('TIMEOUT',  15)))
+                          if resp.status_code  == 200 and 'mpegurl' in resp.headers.get('Content-Type',  ''):
+                              valid = True 
+                              print("Validation successful")
+                      except Exception as e:
+                          print(f"Request failed: {str(e)}")
+ 
+                      # 前缀替换逻辑 
+                      if not valid:
+                          for suffix in suffixes:
+                              new_prefix = base_prefix.replace("2c",  suffix)
+                              test_url = new_prefix + original_url.split(base_prefix)[1] 
+                              print(f"Testing alternative: {test_url}")
+                              
+                              try:
+                                  resp = session.get(test_url,  timeout=int(os.getenv('TIMEOUT',  15)))
+                                  if resp.ok  and 'mpegurl' in resp.headers.get('Content-Type',  ''):
+                                      lines[i] = test_url + '\n'
+                                      valid = True 
+                                      print(f"Found valid alternative: {test_url}")
+                                      break 
+                              except Exception as e:
+                                  print(f"Alternative failed: {str(e)}")
+                                  continue 
+ 
+                      # 记录失效频道 
+                      if not valid and i > 0:
+                          prev_line = lines[i-1].strip()
+                          if prev_line.startswith("#EXTINF")  and "CCTV-" in prev_line:
+                              match = re.search(r',(CCTV-\S+)',  prev_line)
+                              if match:
+                                  failed_channels.append(match.group(1)) 
+ 
+              # 保存更新 
+              f.writelines(lines) 
+              f.truncate() 
+ 
+          # 生成报告 
+          if failed_channels:
+              with open('README.md',  'a+') as f:
+                  f.seek(0) 
+                  content = f.read() 
+                  f.seek(0) 
+                  f.truncate() 
+                  new_content = re.sub(r'###  失效频道列表.*?(\n##|\Z)', '', content, flags=re.DOTALL)
+                  f.write(new_content.strip()  + '\n\n### 失效频道列表\n' + 
+                          '\n'.join([f"- {name}" for name in failed_channels]))
+ 
+          # 智能提交 
+          repo = Repo('.')
+          if repo.is_dirty(): 
+              repo.git.add('CCTV.m3u') 
+              repo.git.add('README.md') 
+              repo.index.commit(f" 自动更新: 修复{len(failed_channels)}个失效频道")
+              origin = repo.remote(name='origin') 
+              origin.push() 
+          EOF
